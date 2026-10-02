@@ -1,0 +1,73 @@
+{
+  "version": 1,
+  "checks": [
+    {
+      "name": "format",
+      "argv": ["nix", "fmt", "--no-write-lock-file", "--", "--ci"],
+      "requires": ["nix"],
+      "timeout_seconds": 120,
+      "profiles": ["fast"]
+    },
+    {
+      "name": "lint",
+      "argv": ["statix", "check", "."],
+      "requires": ["statix"],
+      "timeout_seconds": 120,
+      "profiles": ["fast"]
+    },
+    {
+      "name": "deadnix",
+      "argv": ["deadnix", "--fail", "."],
+      "requires": ["deadnix"],
+      "timeout_seconds": 120,
+      "profiles": ["fast"]
+    },
+    {
+      "name": "shellcheck",
+      "argv": ["shellcheck", "src/system-health.sh", "tests/system-health.sh"],
+      "requires": ["shellcheck"],
+      "timeout_seconds": 120,
+      "profiles": ["fast"]
+    },
+    {
+      "name": "cli-regression",
+      "argv": ["bash", "tests/system-health.sh"],
+      "requires": [
+        "awk",
+        "bash",
+        "cmp",
+        "date",
+        "df",
+        "flock",
+        "gawk",
+        "getconf",
+        "id",
+        "jq",
+        "mktemp",
+        "pidstat",
+        "rg",
+        "sha256sum",
+        "stat",
+        "systemctl",
+        "timeout"
+      ],
+      "timeout_seconds": 300,
+      "profiles": ["fast"]
+    },
+    {
+      "name": "flake-eval",
+      "argv": ["nix", "flake", "check", "--all-systems", "--no-build", "--no-write-lock-file", "."],
+      "requires": ["nix"],
+      "timeout_seconds": 300,
+      "profiles": ["fast"]
+    },
+    {
+      "name": "package-build",
+      "argv": ["nix", "build", "--no-link", "--no-write-lock-file", ".#default"],
+      "requires": ["nix"],
+      "timeout_seconds": 900,
+      "profiles": ["full"]
+    }
+  ],
+  "watch_ignore": [".direnv", "result", "result-*"]
+}
