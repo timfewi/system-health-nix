@@ -37,15 +37,7 @@
 
       # Sampling budgets, the agent slice name and the sampler account stay with
       # the deployment; this module owns the package and the unit shape.
-      nixosModules.default =
-        {
-          pkgs,
-          ...
-        }:
-        import ./nix/module.nix {
-          inherit pkgs;
-          systemHealth = systemHealth pkgs;
-        };
+      nixosModules.default = ./nix/module.nix;
 
       devShells = forPackages (
         { pkgs, ... }:
