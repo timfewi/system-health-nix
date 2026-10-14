@@ -155,5 +155,12 @@ in
     assert lib.elem "timers.target" timer.wantedBy;
     # The module's own validation accepts the declared budget shape.
     assert lib.all (assertion: assertion.assertion) config.assertions;
-    pkgs.runCommand "system-health-module" { } "touch $out";
+    # NixOS links packaged units only from lib/ or etc/systemd/user; without the
+    # base unit the drop-in alone leaves the timer's service "not-found".
+    pkgs.runCommand "system-health-module" { } ''
+      units=${config.environment.etc."systemd/user".source}
+      test -f "$units/system-health-sample.service"
+      test -f "$units/system-health-sample.service.d/overrides.conf"
+      touch $out
+    '';
 }

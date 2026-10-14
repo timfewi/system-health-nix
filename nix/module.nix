@@ -124,7 +124,7 @@ in
           # would not.
           (pkgs.writeTextFile {
             name = "system-health-base-unit";
-            destination = "/share/systemd/user/system-health-sample.service";
+            destination = "/lib/systemd/user/system-health-sample.service";
             text = ''
               [Unit]
               Description=Private aggregate system health history
