@@ -11,6 +11,19 @@ budgets=${SYSTEM_HEALTH_BUDGETS:-}
 agent_slice=${SYSTEM_HEALTH_AGENT_SLICE:-}
 # Monitored filesystems are deployment configuration as well.
 filesystems=${SYSTEM_HEALTH_FILESYSTEMS:-/}
+# Fixture overrides are dependency injection, not a sandbox or security boundary.
+proc_root=${SYSTEM_HEALTH_PROC_ROOT:-/proc}
+cgroup_root=${SYSTEM_HEALTH_CGROUP_ROOT:-/sys/fs/cgroup}
+command_dir=${SYSTEM_HEALTH_COMMAND_DIR:-}
+probe() {
+  local command=$1
+  shift
+  if [[ -n "$command_dir" ]]; then
+    "$command_dir/$command" "$@"
+  else
+    "$command" "$@"
+  fi
+}
 mode=live
 json=false
 pid=
@@ -36,9 +49,10 @@ for argument in "$@"; do
   esac
 done
 if [[ "$mode" == threads ]]; then
-  [[ -n "$pid" && -r "/proc/$pid/stat" && "$json" == false ]] || {
+  [[ -n "$pid" && -r "$proc_root/$pid/stat" && "$json" == false ]] || {
     echo "Use --threads with a readable, running PID (without --json)." >&2; exit 2;
   }
+  if [[ -n "$command_dir" ]]; then exec "$command_dir/pidstat" -t -u -p "$pid" 1 5; fi
   exec pidstat -t -u -p "$pid" 1 5
 fi
 state_base=${XDG_STATE_HOME:-$HOME/.local/state}
@@ -84,11 +98,12 @@ trap 'rm -rf -- "$temporary"; if [[ -n "$next" ]]; then rm -f -- "$next"; fi' EX
 trap 'exit 130' INT
 trap 'exit 143' TERM HUP
 collect_metadata() {
-  awk -v ticks="$(getconf CLK_TCK)" -v uid="$(id -u)" -v budgets="$budgets" \
-    -v agent_slice="$agent_slice" -f "$metadata" /proc/[0-9]*/stat
+  awk -v ticks="$(probe getconf CLK_TCK)" -v uid="$(id -u)" -v budgets="$budgets" \
+    -v proc_root="$proc_root" -v cgroup_root="$cgroup_root" \
+    -v agent_slice="$agent_slice" -f "$metadata" "$proc_root"/[0-9]*/stat
 }
 failed_units() {
-  if timeout --foreground 2s systemctl "$@" --failed --plain --no-legend --no-pager > "$temporary/units" 2>/dev/null; then
+  if timeout --foreground 2s "${command_dir:+$command_dir/}systemctl" "$@" --failed --plain --no-legend --no-pager > "$temporary/units" 2>/dev/null; then
     awk '{print $1}' "$temporary/units" | jq -Rsc 'split("\n") | map(select(length > 0))'
   else
     echo null
@@ -96,11 +111,11 @@ failed_units() {
 }
 sample() {
   collect_metadata > "$temporary/before"
-  pidstat -u -r -v -p ALL -o JSON 1 1 > "$temporary/activity"
+  probe pidstat -u -r -v -p ALL -o JSON 1 1 > "$temporary/activity"
   collect_metadata > "$temporary/after"
   jq --slurpfile before "$temporary/before" --slurpfile after "$temporary/after" \
     --argjson timestamp "$(date -u +%s)" -f "$snapshot_filter" "$temporary/activity" > "$temporary/sample"
-  if ! sensors -j > "$temporary/sensors" 2>/dev/null; then echo '{}' > "$temporary/sensors"; fi
+  if ! probe sensors -j > "$temporary/sensors" 2>/dev/null; then echo '{}' > "$temporary/sensors"; fi
   for mount in $filesystems; do
     [[ "$mount" == /* && "$mount" != *..* && -d "$mount" ]] || continue
     printf '%s\n' "$mount"
@@ -108,7 +123,7 @@ sample() {
   # Each mount is measured on its own, so one failing path cannot hide the rest.
   : > "$temporary/disks"
   while read -r mount; do
-    df -P -- "$mount" 2> /dev/null | tail -n +2 >> "$temporary/disks"
+    probe df -P -- "$mount" 2> /dev/null | tail -n +2 >> "$temporary/disks"
   done < "$temporary/mounts"
   awk '{gsub(/%/, "", $5); printf "{\"mount\":\"%s\",\"used_percent\":%d}\n", $6, $5}' "$temporary/disks" > "$temporary/filesystems"
   jq --slurpfile sensors "$temporary/sensors" --slurpfile filesystems "$temporary/filesystems" \

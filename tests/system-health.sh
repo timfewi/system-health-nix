@@ -6,6 +6,10 @@ export snapshot_filter="$repository/src/snapshot.jq"
 export enrich_filter="$repository/src/health.jq"
 export history_filter="$repository/src/history.jq"
 export render_filter="$repository/src/render.jq"
+# An optional installed executable runs the same suite through its Nix wrapper.
+cli=(bash "$repository/src/system-health.sh")
+if [[ $# == 1 ]]; then cli=("$1"); fi
+[[ $# -le 1 ]]
 # Budgets and the agent slice are configuration; the fixtures below keep their
 # own synthetic paths so nothing on the running host is read.
 export SYSTEM_HEALTH_BUDGETS="agents=/user.slice/user-%u.slice/user@%u.service/app.slice/app-agents.slice;absent=/system.slice/system-health-absent-fixture.service;research=/agent.slice/agent-research.slice;research-service=/agent.slice/agent-research.slice/agent-research.service"
@@ -155,14 +159,92 @@ jq -e 'length == 24 and (map(.samples) | add) == 1440
   and .[0].samples == 60 and (map(.observed_seconds) | add) == 1440' "$temporary/day-summary" > /dev/null
 [[ $(stat -c %s "$temporary/day-summary") -le 1048576 ]]
 if rg -q 'PROMPT_SECRET|DO_NOT_STORE' "$temporary/day-summary"; then exit 1; fi
-if bash "$repository/src/system-health.sh" --threads nope 2>/dev/null; then exit 1; fi
-if bash "$repository/src/system-health.sh" --watch --record 2>/dev/null; then exit 1; fi
+# Exercise real CLI collection with explicit dependencies, not a mocked sample.
+# A poison PATH catches accidental bare probes in the source command; explicit
+# command paths also work when the installed wrapper prepends its own PATH.
+export SYSTEM_HEALTH_PROC_ROOT="$temporary/proc"
+export SYSTEM_HEALTH_CGROUP_ROOT="$temporary/cgroups"
+export SYSTEM_HEALTH_COMMAND_DIR="$temporary/commands"
+export SYSTEM_HEALTH_FILESYSTEMS="/"
+export fixture="$temporary"
+fixture_uid=$(id -u)
+fixture_group="$temporary/cgroups/user.slice/user-$fixture_uid.slice/user@$fixture_uid.service/app.slice/app-agents.slice"
+export fixture_group
+if [[ "$fixture_group" != "$group" ]]; then
+  mkdir -p "$fixture_group"
+  cp -- "$group/"* "$fixture_group/"
+fi
+mkdir -p "$SYSTEM_HEALTH_COMMAND_DIR" "$temporary/poison"
+printf '#!%s\n' "$(command -v bash)" > "$temporary/probe"
+cat >> "$temporary/probe" <<'SH'
+set -euo pipefail
+command=${0##*/}
+printf '%s:%s:%s\n' "$command" "$#" "$*" >> "$fixture/probe-log"
+case "$command:$#:$*" in
+  getconf:1:CLK_TCK) printf '100\n' ;;
+  pidstat:9:'-u -r -v -p ALL -o JSON 1 1')
+    awk '{$1 += 1; print}' "$SYSTEM_HEALTH_PROC_ROOT/uptime" > "$fixture/uptime-next"
+    mv -- "$fixture/uptime-next" "$SYSTEM_HEALTH_PROC_ROOT/uptime"
+    awk '{$2 += 40; $5 += 50; $6 += 10; print}' "$SYSTEM_HEALTH_PROC_ROOT/stat" > "$fixture/stat-next"
+    mv -- "$fixture/stat-next" "$SYSTEM_HEALTH_PROC_ROOT/stat"
+    awk '$1 == "usage_usec" {$2 += 500000} {print}' "$fixture_group/cpu.stat" > "$fixture/cpu-next"
+    mv -- "$fixture/cpu-next" "$fixture_group/cpu.stat"
+    cat -- "$fixture/activity"
+    ;;
+  pidstat:6:'-t -u -p 100 1 5') printf 'synthetic thread sample\n' ;;
+  sensors:1:-j) cat -- "$fixture/sensors" ;;
+  df:3:'-P -- /')
+    printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\nfixture 100 90 10 90%% /\n'
+    ;;
+  systemctl:4:'--failed --plain --no-legend --no-pager'|systemctl:5:'--user --failed --plain --no-legend --no-pager')
+    printf 'SYNTHETIC_PRIVATE_UNIT loaded failed failed fixture\n'
+    ;;
+  *) printf '%s\n' "Unexpected probe: $command $*" >> "$fixture/forbidden-probe"; exit 97 ;;
+esac
+SH
+printf '#!%s\n' "$(command -v bash)" > "$temporary/forbidden"
+cat >> "$temporary/forbidden" <<'SH'
+printf '%s\n' "$0 $*" >> "$fixture/forbidden-probe"
+exit 98
+SH
+chmod +x "$temporary/probe" "$temporary/forbidden"
+for command in getconf pidstat sensors df systemctl; do
+  ln -s "$temporary/probe" "$SYSTEM_HEALTH_COMMAND_DIR/$command"
+  ln -s "$temporary/forbidden" "$temporary/poison/$command"
+done
+export PATH="$temporary/poison:$PATH"
+: > "$temporary/probe-log"
+"${cli[@]}" --json > "$temporary/live"
+jq -e '.interval_seconds == 1 and .memory_available_mib == 4
+  and .cpu_percent == 40 and .iowait_percent == 10
+  and .pressure_avg10.cpu == 1.25 and .pressure_avg10.memory == null
+  and ([.processes[].pid] | sort) == [100,101,102,103,104]
+  and ([.budgets[] | select(.name == "agents") | .cpu_percent] == [50])
+  and ([.budgets[] | select(.name == "absent") | .available] == [false])
+  and .hottest_c == 91 and .filesystems == [{mount:"/",used_percent:90}]
+  and .failed_units == {system:["SYNTHETIC_PRIVATE_UNIT"],user:["SYNTHETIC_PRIVATE_UNIT"]}' \
+  "$temporary/live" > /dev/null
+cat > "$temporary/expected-probes" <<'LOG'
+getconf:1:CLK_TCK
+pidstat:9:-u -r -v -p ALL -o JSON 1 1
+getconf:1:CLK_TCK
+sensors:1:-j
+df:3:-P -- /
+systemctl:4:--failed --plain --no-legend --no-pager
+systemctl:5:--user --failed --plain --no-legend --no-pager
+LOG
+cmp -- "$temporary/expected-probes" "$temporary/probe-log"
+[[ ! -e "$temporary/forbidden-probe" ]]
+"${cli[@]}" --threads 100 > "$temporary/threads"
+rg -q '^synthetic thread sample$' "$temporary/threads"
+if "${cli[@]}" --threads nope 2>/dev/null; then exit 1; fi
+if "${cli[@]}" --watch --record 2>/dev/null; then exit 1; fi
 mkdir -p "$XDG_STATE_HOME"
 ln -s "$temporary" "$XDG_STATE_HOME/system-health"
-if bash "$repository/src/system-health.sh" --record 2>/dev/null; then exit 1; fi
+if "${cli[@]}" --record 2>/dev/null; then exit 1; fi
 rm -- "$XDG_STATE_HOME/system-health"
 # Exercise the actual CLI and round-trip its private, aggregate-only history.
-bash "$repository/src/system-health.sh" --record
+"${cli[@]}" --record
 history="$XDG_STATE_HOME/system-health"
 today=$(date -u +%F)
 file="$history/$today.jsonl"
@@ -170,19 +252,22 @@ file="$history/$today.jsonl"
 jq -e 'has("processes") == false and has("scopes") == false and has("temperatures") == false
   and (.failed_units.system == null or (.failed_units.system | type) == "number")
   and (.failed_units.user == null or (.failed_units.user | type) == "number")' "$file" > /dev/null
+jq -e '.memory_available_mib == 4 and .hottest_c == 91
+  and .failed_units == {system:1,user:1}' "$file" > /dev/null
+if rg -q 'PROMPT_SECRET|DO_NOT_STORE|SYNTHETIC_PRIVATE_UNIT|agent-fixture.scope|odd_ name' "$file"; then exit 1; fi
 # Watched filesystems are configuration: a stale or relative path is skipped
 # instead of reporting usage for the wrong mount. Each case uses its own state
 # directory so the hourly fold cannot merge it with the recorded sample.
 mkdir -p "$temporary/fs-skipped" "$temporary/fs-root"
 XDG_STATE_HOME="$temporary/fs-skipped" SYSTEM_HEALTH_FILESYSTEMS="$temporary/missing relative/path" \
-  bash "$repository/src/system-health.sh" --record
+  "${cli[@]}" --record
 jq -e '.filesystems == []' "$temporary/fs-skipped/system-health/$today.jsonl" > /dev/null
 XDG_STATE_HOME="$temporary/fs-root" SYSTEM_HEALTH_FILESYSTEMS="/ /" \
-  bash "$repository/src/system-health.sh" --record
+  "${cli[@]}" --record
 jq -e '.filesystems | length == 1 and .[0].mount == "/"' \
   "$temporary/fs-root/system-health/$today.jsonl" > /dev/null
-bash "$repository/src/system-health.sh" --history --json | jq -e '.schema == 2 and .samples == 1' > /dev/null
-bash "$repository/src/system-health.sh" --history > "$temporary/history-view"
+"${cli[@]}" --history --json | jq -e '.schema == 2 and .samples == 1' > /dev/null
+"${cli[@]}" --history > "$temporary/history-view"
 rg -q 'CPU peak=' "$temporary/history-view"
 cp -- "$file" "$history/$(date -u -d '8 days ago' +%F).jsonl"
 cp -- "$file" "$history/$(date -u -d tomorrow +%F).jsonl"
@@ -195,7 +280,7 @@ jq -sc --argjson timestamp "$(date -u -d "$today 00:01:00" +%s)" \
   > "$temporary/early-peak"
 cat -- "$temporary/early-peak" "$file" > "$temporary/with-peak"
 cat -- "$temporary/with-peak" > "$file"
-bash "$repository/src/system-health.sh" --record
+"${cli[@]}" --record
 [[ $(stat -c %s "$file") -le 1048576 ]]
 [[ ! -e "$history/$(date -u -d '8 days ago' +%F).jsonl" && ! -e "$history/$(date -u -d tomorrow +%F).jsonl" ]]
 jq -e '.schema == 2 and .kind == "hour"' "$file" > /dev/null
@@ -203,9 +288,10 @@ jq -se 'map(.cpu_percent) | max == 100' "$file" > /dev/null
 jq -se 'map(.memory_available_mib) | min == 1' "$file" > /dev/null
 printf '{"schema":99,"timestamp":0}\n' > "$file"
 before_digest=$(sha256sum "$file")
-if bash "$repository/src/system-health.sh" --record 2>/dev/null; then exit 1; fi
+if "${cli[@]}" --record 2>/dev/null; then exit 1; fi
 [[ $(sha256sum "$file") == "$before_digest" ]]
 if compgen -G "$history/.next.*" > /dev/null; then exit 1; fi
 chmod 644 "$file"
-if bash "$repository/src/system-health.sh" --history 2>/dev/null; then exit 1; fi
+if "${cli[@]}" --history 2>/dev/null; then exit 1; fi
+[[ ! -e "$temporary/forbidden-probe" ]]
 echo "System health counters, attribution, alerts, hourly peaks, private history and atomic retention checks passed."

@@ -42,7 +42,6 @@ in
           pkgs.glibc.bin
           pkgs.jq
           pkgs.ripgrep
-          pkgs.sysstat
           pkgs.util-linux
         ];
       }
@@ -60,21 +59,19 @@ in
         nativeBuildInputs = [
           pkgs.bash
           pkgs.coreutils
+          pkgs.gawk
+          pkgs.glibc.bin
           pkgs.jq
+          pkgs.ripgrep
+          pkgs.util-linux
           system-health
         ];
       }
       ''
-        export XDG_STATE_HOME="$TMPDIR/state"
-        system-health --record
-        today=$(date -u +%F)
-        test "$(stat -c %a "$XDG_STATE_HOME/system-health")" = 700
-        test "$(stat -c %a "$XDG_STATE_HOME/system-health/$today.jsonl")" = 600
-        # Aggregate-only records: no process names, PIDs, scopes or temperatures.
-        jq -e 'has("processes") == false and has("scopes") == false
-          and has("temperatures") == false and .schema == 2' \
-          "$XDG_STATE_HOME/system-health/$today.jsonl"
-        system-health --history --json | jq -e '.schema == 2 and .samples == 1'
+        cp -R -- ${../.} ./tree
+        chmod -R u+w ./tree
+        cd ./tree
+        bash tests/system-health.sh ${system-health}/bin/system-health
         touch $out
       '';
 

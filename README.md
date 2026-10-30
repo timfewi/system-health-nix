@@ -175,8 +175,18 @@ just check             # project-check fast: format, lint, shellcheck, tests, fl
 just verify            # project-check full: also builds the package
 ```
 
-Checks are declared in `.project-checks.json`. The regressions use synthetic
-`/proc` and cgroup fixtures, so they neither read nor write host state.
+Checks are declared in `.project-checks.json`. Source and installed-package CLI
+regressions use synthetic process, cgroup, pidstat, sensor, filesystem and service
+manager data, while exercising the actual metadata, snapshot, enrichment and
+private history code. History files and permission checks use a temporary directory.
+`SYSTEM_HEALTH_PROC_ROOT` and `SYSTEM_HEALTH_CGROUP_ROOT` replace the counter roots;
+`SYSTEM_HEALTH_COMMAND_DIR` selects fixture executables for `getconf`, `pidstat`,
+`sensors`, `df` and `systemctl` independently of the package wrapper's PATH.
+These overrides are test dependency injection, not a security boundary or sandbox:
+they execute trusted commands, and do not validate or confine paths. Tests still
+use the real clock, effective UID and local temporary-file operations.
+Without overrides, sampling sources, command arguments, timing and deployment
+defaults are unchanged.
 
 ## License
 
