@@ -30,7 +30,7 @@ examples. Runtime state stays out of Git.
 
 - Inspect `git status --short` and the staged and unstaged diffs before editing.
   Existing work must be preserved; never reset it.
-- Enter the pinned toolchain with `nix develop` (or reload direnv) before running
+- Enter the pinned toolchain with `devenv shell` (or `nix develop`) before running
   Nix commands.
 - Keep the sampling behaviour unchanged unless the change and its reason are
   written down in the README.

@@ -169,7 +169,7 @@ configuration instead of forking this package.
 ## Development
 
 ```sh
-nix develop            # pinned toolchain
+devenv shell            # pinned toolchain
 just test              # CLI regression against synthetic /proc fixtures
 just check             # project-check fast: format, lint, shellcheck, tests, flake eval
 just verify            # project-check full: also builds the package

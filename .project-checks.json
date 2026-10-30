@@ -69,5 +69,5 @@
       "profiles": ["full"]
     }
   ],
-  "watch_ignore": [".direnv", "result", "result-*"]
+  "watch_ignore": [".devenv", ".direnv", "result", "result-*"]
 }
